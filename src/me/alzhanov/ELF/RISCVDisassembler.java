@@ -54,6 +54,15 @@ public class RISCVDisassembler {
             throw new AssertionError("RISC-V doesn't have register " + reg);
     }
 
+    private String getSymbolFor(long loc) {
+        ElfSymbol symb = file.getELFSymbol(loc);
+        String locS = String.format("0x%08X", loc);
+        if (symb != null && symb.st_value == loc && symb.section_type == ElfSymbol.STT_FUNC) {
+            locS += " <" + symb.getName() + ">";
+        }
+        return locS;
+    }
+
     private void doDisassemble(PrintWriter out) {
         ElfSection textSection = file.firstSectionByName(".text");
         if (textSection == null)
@@ -97,19 +106,29 @@ public class RISCVDisassembler {
                 // 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
                 //  1  1  0  0  1  0  0  0  1  0  0  0  1  0  1  1  0  0  1  0  0
                 int imm = instruction >> 12;
-                out.printf("%6s %s, %d%n", "jal", getRegisterMark(rd), (((imm >>> 9) & ((1 << 10) - 1)) << 1) | (((imm >>> 8) & 1) << 11) | ((imm & ((1 << 8) - 1)) << 12) | (((imm >>> 19) & 1) << 20));
+                int offset = (((imm >>> 9) & ((1 << 10) - 1)) << 1) | (((imm >>> 8) & 1) << 11) | ((imm & ((1 << 8) - 1)) << 12) | (((imm >>> 19) & 1) << 20);
+                if ((offset & (1 << 20)) != 0) {
+                    offset = -offset & ((1 << 20) - 1);
+                }
+                out.printf("%6s %s, %d #%s%n", "jal", getRegisterMark(rd), offset, getSymbolFor(virtualAddress + offset));
             } else if (opcode == 0b1100111 && funct3 == 0b000) { // jalr
+                if ((imm110 & (1 << 11)) != 0) { // I hope it works cuz i don't have binaries to test this
+                    imm110 = -imm110 & ((1 << 11) - 1);
+                }
                 out.printf("%6s %s, %s, %d%n", "jalr", getRegisterMark(rd), getRegisterMark(rs1), imm110);
             } else if (opcode == 0b1100011) { // B-type
                 // fucking hell...
                 // 12 10 9 8 7 6 5 . . . . . . . . . . . . . 4 3 2 1 11 . . . . . . .
 
-                int imm = (((instruction >>> 8) & ((1 << 4) - 1)) << 1) |
+                int offset = (((instruction >>> 8) & ((1 << 4) - 1)) << 1) |
                         (((instruction >>> 25) & ((1 << 6) - 1)) << 6) |
                         (((instruction >>> 7) & 1) << 11) |
                         (((instruction >>> 31) & 1) << 12); // probably has a bug - did not test
+                if ((offset & (1 << 12)) != 0) {
+                    offset = -offset & ((1 << 12) - 1);
+                }
                 String instr = new String[]{"beq", "bne", "??", "??", "blt", "bge", "bltu", "bgeu"}[funct3];
-                out.printf("%6s %s, %s, %d%n", instr, getRegisterMark(rd), getRegisterMark(rs1), imm);
+                out.printf("%6s %s, %s, %d #%s %n", instr, getRegisterMark(rd), getRegisterMark(rs1), offset, getSymbolFor(virtualAddress + offset));
             } else if (opcode == 0b0000011) { // I-type - LB, LH, LW, LBU, LHU
                 String instr = new String[]{"lb", "lh", "lw", "??", "lbu", "lhu", "??", "??"}[funct3];
                 out.printf("%6s %s, %s, %d%n", instr, getRegisterMark(rd), getRegisterMark(rs1), imm110);
