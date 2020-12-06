@@ -2,7 +2,6 @@ package me.alzhanov.ELF;
 
 import net.fornwall.jelf.*;
 
-import java.io.ByteArrayInputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.util.InputMismatchException;
@@ -11,12 +10,12 @@ public class RISCVDisassembler {
     final ElfFile file;
 
     public RISCVDisassembler(ElfFile file) {
-//        if (file.objectSize != ElfFile.CLASS_32) {
-//            throw new InputMismatchException("That elf is not 32 bit.");
-//        }
-//        if (file.arch != 0xF3) {
-//            throw new InputMismatchException("That elf is not for RISC-V.");
-//        }
+        if (file.objectSize != ElfFile.CLASS_32) {
+            throw new InputMismatchException("That elf is not 32 bit.");
+        }
+        if (file.arch != 0xF3) {
+            throw new InputMismatchException("That elf is not for RISC-V.");
+        }
         this.file = file;
     }
 
@@ -27,7 +26,7 @@ public class RISCVDisassembler {
         writer.flush();
     }
 
-    String getRegisterMark(int reg) {
+    String getRegisterString(int reg) {
         if (reg == 0)
             return "zero";
         else if (reg == 1)
@@ -54,7 +53,7 @@ public class RISCVDisassembler {
             throw new AssertionError("RISC-V doesn't have register " + reg);
     }
 
-    private String getSymbolFor(long loc) {
+    private String getSymbolForAddr(long loc) {
         ElfSymbol symb = file.getELFSymbol(loc);
         String locS = String.format("0x%08X", loc);
         if (symb != null && symb.st_value == loc && symb.section_type == ElfSymbol.STT_FUNC) {
@@ -92,9 +91,9 @@ public class RISCVDisassembler {
             if (instruction == 0b1110011) { // ecall
                 out.printf("%6s%n", "ecall");
             } else if (opcode == 0b0110111) { // LUI
-                out.printf("%6s %s, %d%n", "lui", getRegisterMark(rd), instruction >>> 12);
+                out.printf("%6s %s, %d%n", "lui", getRegisterString(rd), instruction >>> 12);
             } else if (opcode == 0b0010111) { // AUIPC
-                out.printf("%6s %s, %d%n", "auipc", getRegisterMark(rd), (instruction >>> 12) << 12);
+                out.printf("%6s %s, %d%n", "auipc", getRegisterString(rd), (instruction >>> 12) << 12);
             } else if (opcode == 0b1101111) { // JAL
                 // 20 | 10:1 | 11 | 19:12 <- боже мой
                 // 20 10  9  8  7  6  5  4  3  2  1 11 19 18 17 16 15 14 13 12
@@ -110,55 +109,56 @@ public class RISCVDisassembler {
                 if ((offset & (1 << 20)) != 0) {
                     offset = -offset & ((1 << 20) - 1);
                 }
-                out.printf("%6s %s, %d #%s%n", "jal", getRegisterMark(rd), offset, getSymbolFor(virtualAddress + offset));
+                out.printf("%6s %s, %d #%s%n", "jal", getRegisterString(rd), offset, getSymbolForAddr(virtualAddress + offset));
             } else if (opcode == 0b1100111 && funct3 == 0b000) { // jalr
                 if ((imm110 & (1 << 11)) != 0) { // I hope it works cuz i don't have binaries to test this
                     imm110 = -imm110 & ((1 << 11) - 1);
                 }
-                out.printf("%6s %s, %s, %d%n", "jalr", getRegisterMark(rd), getRegisterMark(rs1), imm110);
+                out.printf("%6s %s, %s, %d%n", "jalr", getRegisterString(rd), getRegisterString(rs1), imm110);
             } else if (opcode == 0b1100011) { // B-type
                 // fucking hell...
                 // 12 10 9 8 7 6 5 . . . . . . . . . . . . . 4 3 2 1 11 . . . . . . .
 
+                // 12 11 10 9 8 7 6 5 4 3 2 1 0
                 int offset = (((instruction >>> 8) & ((1 << 4) - 1)) << 1) |
-                        (((instruction >>> 25) & ((1 << 6) - 1)) << 6) |
+                        (((instruction >>> 25) & ((1 << 6) - 1)) << 5) |
                         (((instruction >>> 7) & 1) << 11) |
                         (((instruction >>> 31) & 1) << 12); // probably has a bug - did not test
                 if ((offset & (1 << 12)) != 0) {
                     offset = -offset & ((1 << 12) - 1);
                 }
                 String instr = new String[]{"beq", "bne", "??", "??", "blt", "bge", "bltu", "bgeu"}[funct3];
-                out.printf("%6s %s, %s, %d #%s %n", instr, getRegisterMark(rd), getRegisterMark(rs1), offset, getSymbolFor(virtualAddress + offset));
+                out.printf("%6s %s, %s, %d #%s %n", instr, getRegisterString(rs1), getRegisterString(rs2), offset, getSymbolForAddr(virtualAddress + offset));
             } else if (opcode == 0b0000011) { // I-type - LB, LH, LW, LBU, LHU
                 String instr = new String[]{"lb", "lh", "lw", "??", "lbu", "lhu", "??", "??"}[funct3];
-                out.printf("%6s %s, %s, %d%n", instr, getRegisterMark(rd), getRegisterMark(rs1), imm110);
+                out.printf("%6s %s, %s, %d%n", instr, getRegisterString(rd), getRegisterString(rs1), imm110);
             } else if (opcode == 0b0100011) { // S-type SB, SH, SW
                 String instr = new String[]{"sb", "sh", "sw", "??", "??", "??", "??", "??"}[funct3];
                 int imm = rd | ((imm110 >>> 5) << 5);
-                out.printf("%6s %s, %d(%s)%n", instr, getRegisterMark(rs2), imm, getRegisterMark(rs1));
+                out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rs2), imm, getRegisterString(rs1));
             } else if (opcode == 0b0010011) {
                 if (funct3 == 0b001) { // SLLI
-                    out.printf("%6s %s, %s, %d%n", "slli", getRegisterMark(rd), getRegisterMark(rs1), imm110);
+                    out.printf("%6s %s, %s, %d%n", "slli", getRegisterString(rd), getRegisterString(rs1), imm110);
                 } else if (funct3 == 0b101) {
                     if (funct7 == 0b0100000) {// SRAI
-                        out.printf("%6s %s, %s, %d%n", "srai", getRegisterMark(rd), getRegisterMark(rs1), imm110 & ((1 << 5) - 1));
+                        out.printf("%6s %s, %s, %d%n", "srai", getRegisterString(rd), getRegisterString(rs1), imm110 & ((1 << 5) - 1));
                     } else { // SRLI
-                        out.printf("%6s %s, %s, %d%n", "srli", getRegisterMark(rd), getRegisterMark(rs1), imm110);
+                        out.printf("%6s %s, %s, %d%n", "srli", getRegisterString(rd), getRegisterString(rs1), imm110);
                     }
                 } else { // I-type - ADDI, SLTI, SLTIU, XORI, ORI, ANDI
                     String instr = new String[]{"addi", "??", "slti", "sltiu", "xori", "??", "ori", "andi"}[funct3];
-                    out.printf("%6s %s, %s, %d%n", instr, getRegisterMark(rd), getRegisterMark(rs1), imm110);
+                    out.printf("%6s %s, %s, %d%n", instr, getRegisterString(rd), getRegisterString(rs1), imm110);
                 }
             } else if (opcode == 0b110011) { // R-type
                 if (funct7 == 0b0100000) {// SUB, SRA
                     String instr = new String[]{"sub", "??", "??", "??", "??", "sra", "??", "??"}[funct3];
-                    out.printf("%6s %s,%s,%s%n", instr, getRegisterMark(rd), getRegisterMark(rs2), getRegisterMark(rs1));
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs2), getRegisterString(rs1));
                 } else if (funct7 == 0) {
                     String instr = new String[]{"add", "sll", "slt", "sltu", "xor", "srl", "or", "and"}[funct3];
-                    out.printf("%6s %s,%s,%s%n", instr, getRegisterMark(rd), getRegisterMark(rs2), getRegisterMark(rs1));
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs2), getRegisterString(rs1));
                 } else if (funct7 == 1) {
                     String instr = new String[]{"mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"}[funct3];
-                    out.printf("%6s %s,%s,%s%n", instr, getRegisterMark(rd), getRegisterMark(rs2), getRegisterMark(rs1));
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs2), getRegisterString(rs1));
                 }
             } else {
                 out.printf("????%n");
@@ -231,11 +231,11 @@ public class RISCVDisassembler {
         ElfSymbolTableSection symtable = file.getSymbolTableSection();
         int symbolCount = symtable.symbols.length;
         int firstColWidth = getIntWidth(symbolCount);
-        out.println(String.format("%" + (firstColWidth + 2) + "s   %8s %4s %7s %7s %8s %4s %s",
+        out.println(String.format("%" + (firstColWidth + 2) + "s   %8s %5s %7s %7s %8s %4s %s",
                 "Symbol".substring(0, firstColWidth + 2), "Value", "Size", "Type", "Bind", "Vis", "Index", "Name"));
         for (int i = 0; i < symbolCount; i++) {
             ElfSymbol symbol = symtable.symbols[i];
-            out.println(String.format("[%" + firstColWidth + "s] 0x%08X %4s %7s %7s %8s %4s %s",
+            out.println(String.format("[%" + firstColWidth + "s] 0x%08X %5s %7s %7s %8s %4s %s",
                     i,
                     symbol.st_value,
                     symbol.st_size,
