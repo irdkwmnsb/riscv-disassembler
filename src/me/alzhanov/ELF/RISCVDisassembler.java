@@ -88,12 +88,10 @@ public class RISCVDisassembler {
             int rs2 = instruction >> 20 & ((1 << 5) - 1);
             int imm110 = instruction >> 20 & ((1 << 12) - 1);
             int funct7 = instruction >> 25;
-            if (instruction == 0b1110011) { // ecall
-                out.printf("%6s%n", "ecall");
-            } else if (opcode == 0b0110111) { // LUI
-                out.printf("%6s %s, %d%n", "lui", getRegisterString(rd), instruction >>> 12);
+            if (opcode == 0b0110111) { // LUI
+                out.printf("%6s %s, %s%n", "lui", getRegisterString(rd), Integer.toUnsignedString((instruction >>> 12) << 12));
             } else if (opcode == 0b0010111) { // AUIPC
-                out.printf("%6s %s, %d%n", "auipc", getRegisterString(rd), (instruction >>> 12) << 12);
+                out.printf("%6s %s, %s%n", "auipc", getRegisterString(rd), Integer.toUnsignedString((instruction >>> 12) << 12));
             } else if (opcode == 0b1101111) { // JAL
                 // 20 | 10:1 | 11 | 19:12 <- боже мой
                 // 20 10  9  8  7  6  5  4  3  2  1 11 19 18 17 16 15 14 13 12
@@ -105,7 +103,10 @@ public class RISCVDisassembler {
                 // 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
                 //  1  1  0  0  1  0  0  0  1  0  0  0  1  0  1  1  0  0  1  0  0
                 int imm = instruction >> 12;
-                int offset = (((imm >>> 9) & ((1 << 10) - 1)) << 1) | (((imm >>> 8) & 1) << 11) | ((imm & ((1 << 8) - 1)) << 12) | (((imm >>> 19) & 1) << 20);
+                int offset = (((imm >>> 9) & ((1 << 10) - 1)) << 1) |
+                        (((imm >>> 8) & 1) << 11) |
+                        ((imm & ((1 << 8) - 1)) << 12) |
+                        (((imm >>> 19) & 1) << 20);
                 if ((offset & (1 << 20)) != 0) {
                     offset = -offset & ((1 << 20) - 1);
                 }
@@ -131,7 +132,7 @@ public class RISCVDisassembler {
                 out.printf("%6s %s, %s, %d #%s %n", instr, getRegisterString(rs1), getRegisterString(rs2), offset, getSymbolForAddr(virtualAddress + offset));
             } else if (opcode == 0b0000011) { // I-type - LB, LH, LW, LBU, LHU
                 String instr = new String[]{"lb", "lh", "lw", "??", "lbu", "lhu", "??", "??"}[funct3];
-                out.printf("%6s %s, %s, %d%n", instr, getRegisterString(rd), getRegisterString(rs1), imm110);
+                out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rd), imm110, getRegisterString(rs1));
             } else if (opcode == 0b0100011) { // S-type SB, SH, SW
                 String instr = new String[]{"sb", "sh", "sw", "??", "??", "??", "??", "??"}[funct3];
                 int imm = rd | ((imm110 >>> 5) << 5);
@@ -152,13 +153,32 @@ public class RISCVDisassembler {
             } else if (opcode == 0b110011) { // R-type
                 if (funct7 == 0b0100000) {// SUB, SRA
                     String instr = new String[]{"sub", "??", "??", "??", "??", "sra", "??", "??"}[funct3];
-                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs2), getRegisterString(rs1));
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs1), getRegisterString(rs2));
                 } else if (funct7 == 0) {
                     String instr = new String[]{"add", "sll", "slt", "sltu", "xor", "srl", "or", "and"}[funct3];
-                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs2), getRegisterString(rs1));
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs1), getRegisterString(rs2));
                 } else if (funct7 == 1) {
                     String instr = new String[]{"mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"}[funct3];
-                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs2), getRegisterString(rs1));
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), getRegisterString(rs1), getRegisterString(rs2));
+                }
+            } else if (opcode == 0b0001111) {
+                if (funct3 == 1) { // FENCE.I
+                    out.printf("%6s%n", "fence.i");
+                } else { // FENCE
+                    out.printf("%6s %d, %d%n", "fence", imm110 >>> 4 << 4, imm110 & ((1 << 4) - 1));
+                }
+            } else if (opcode == 0b1110011) {
+                if (funct3 == 0) {
+                    if (imm110 == 0) { // ECALL
+                        out.printf("%6s%n", "ecall");
+                    } else if (imm110 == 1) { // EBREAK
+                        out.printf("%6s%n", "ebreak");
+                    } else {
+                        out.printf("????%n");
+                    }
+                } else {
+                    String instr = new String[]{"", "csrrw", "csrrs", "csrrc", "??", "csrrwi", "csrrsi", "csrrci"}[funct3];
+                    out.printf("%6s %s, %s, %s%n", instr, getRegisterString(rd), imm110, getRegisterString(rs1));
                 }
             } else {
                 out.printf("????%n");
