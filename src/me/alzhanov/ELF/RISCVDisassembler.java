@@ -4,7 +4,10 @@ import net.fornwall.jelf.*;
 
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.util.HashSet;
 import java.util.InputMismatchException;
+import java.util.Set;
+import java.util.TreeSet;
 
 public class RISCVDisassembler {
     final ElfFile file;
@@ -53,33 +56,97 @@ public class RISCVDisassembler {
             throw new AssertionError("RISC-V doesn't have register " + reg);
     }
 
-    private String getSymbolForAddr(long loc) {
+    private String getSymbolForAddr(long loc, boolean isUnmarked) {
         ElfSymbol symb = file.getELFSymbol(loc);
         String locS = String.format("0x%08X", loc);
         if (symb != null && symb.st_value == loc && symb.section_type == ElfSymbol.STT_FUNC) {
             locS += " <" + symb.getName() + ">";
+        } else if (isUnmarked) {
+            locS += String.format(" <LOC_0x%08X>", loc);
         }
         return locS;
     }
 
-    private void doDisassemble(PrintWriter out) {
+    Set<Long> findUnmarkedLocations(ElfSection textSection) {
+        long curOffset = 0;
+        file.parser.seek(textSection.header.section_offset);
+        Set<Long> symbs = new HashSet<>();
+        while (curOffset < textSection.header.size) {
+            long virtualAddress = curOffset + textSection.header.address;
+            int instruction = file.parser.readInt();
+            int opcode = instruction & ((1 << 7) - 1);
+            if (opcode == 0b1101111) { // JAL
+                int offset = getOffsetForJType(instruction);
+                ElfSymbol symb = file.getELFSymbol(virtualAddress + offset);
+                if (symb == null || symb.st_value != virtualAddress + offset || symb.section_type == ElfSymbol.STT_FUNC)
+                    symbs.add(virtualAddress + offset);
+            } else if (opcode == 0b1100011) { // B-type
+                int offset = getOffsetForBType(instruction);
+                ElfSymbol symb = file.getELFSymbol(virtualAddress + offset);
+                if (symb == null || symb.st_value != virtualAddress + offset || symb.section_type == ElfSymbol.STT_FUNC)
+                    symbs.add(virtualAddress + offset);
+            }
+            curOffset += 4;
+        }
+        return symbs;
+    }
+
+    private int getOffsetForBType(int instruction) {
+        // fucking hell...
+        // 12 10 9 8 7 6 5 . . . . . . . . . . . . . 4 3 2 1 11 . . . . . . .
+
+        // 12 11 10 9 8 7 6 5 4 3 2 1 0
+        int offset = (((instruction >>> 8) & ((1 << 4) - 1)) << 1) |
+                (((instruction >>> 25) & ((1 << 6) - 1)) << 5) |
+                (((instruction >>> 7) & 1) << 11) |
+                (((instruction >>> 31) & 1) << 12); // probably has a bug - did not test
+        if ((offset & (1 << 12)) != 0) {
+            offset = -(-offset & ((1 << 12) - 1));
+        }
+        return offset;
+    }
+
+    private int getOffsetForJType(int instruction) {
+        // 20 | 10:1 | 11 | 19:12 <- боже мой
+        // 20 10  9  8  7  6  5  4  3  2  1 11 19 18 17 16 15 14 13 12
+        // 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+
+        // 20 10  9  8  7  6  5  4  3  2  1 11 19 18 17 16 15 14 13 12
+        //  1  0  0  1  0  1  1  0  0  1  0  0  1  0  0  1  0  0  0  1
+
+        // 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
+        //  1  1  0  0  1  0  0  0  1  0  0  0  1  0  1  1  0  0  1  0  0
+        int imm = instruction >> 12;
+        int offset = (((imm >>> 9) & ((1 << 10) - 1)) << 1) |
+                (((imm >>> 8) & 1) << 11) |
+                ((imm & ((1 << 8) - 1)) << 12) |
+                (((imm >>> 19) & 1) << 20);
+        if ((offset & (1 << 20)) != 0) {
+            offset = -(-offset & ((1 << 20) - 1));
+        }
+        return offset;
+    }
+
+    public void doDisassemble(PrintWriter out) {
+        file.getDynamicSymbolTableSection();
+        file.getSymbolTableSection();
         ElfSection textSection = file.firstSectionByName(".text");
         if (textSection == null)
             throw new InputMismatchException("No .text found");
-        file.getDynamicSymbolTableSection();
-        file.getSymbolTableSection();
         long curOffset = 0;
-        int maxSymbolLen = 10;
+        Set<Long> unmarked = findUnmarkedLocations(textSection);
         file.parser.seek(textSection.header.section_offset);
         while (curOffset < textSection.header.size) {
             long virtualAddress = curOffset + textSection.header.address;
-            out.print(String.format("%08X:", virtualAddress));
+            out.print(String.format("%08X: ", virtualAddress));
             int instruction = file.parser.readInt();
             ElfSymbol symb = file.getELFSymbol(virtualAddress);
             if (symb != null && symb.st_value == virtualAddress && symb.section_type == ElfSymbol.STT_FUNC) {
-                out.printf("<%" + maxSymbolLen + "s> ", symb.getName());
+                out.printf("<%s>\t", symb.getName());
+            } else if (unmarked.contains(virtualAddress)) {
+                out.printf("<LOC_0x%08X>\t", virtualAddress);
             } else {
-                out.print(" ".repeat(maxSymbolLen + 3));
+                out.print("\t");
             }
             int opcode = instruction & ((1 << 7) - 1);
             int rd = instruction >> 7 & ((1 << 5) - 1);
@@ -93,43 +160,19 @@ public class RISCVDisassembler {
             } else if (opcode == 0b0010111) { // AUIPC
                 out.printf("%6s %s, %s%n", "auipc", getRegisterString(rd), Integer.toUnsignedString((instruction >>> 12) << 12));
             } else if (opcode == 0b1101111) { // JAL
-                // 20 | 10:1 | 11 | 19:12 <- боже мой
-                // 20 10  9  8  7  6  5  4  3  2  1 11 19 18 17 16 15 14 13 12
-                // 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-
-                // 20 10  9  8  7  6  5  4  3  2  1 11 19 18 17 16 15 14 13 12
-                //  1  0  0  1  0  1  1  0  0  1  0  0  1  0  0  1  0  0  0  1
-
-                // 20 19 18 17 16 15 14 13 12 11 10  9  8  7  6  5  4  3  2  1  0
-                //  1  1  0  0  1  0  0  0  1  0  0  0  1  0  1  1  0  0  1  0  0
-                int imm = instruction >> 12;
-                int offset = (((imm >>> 9) & ((1 << 10) - 1)) << 1) |
-                        (((imm >>> 8) & 1) << 11) |
-                        ((imm & ((1 << 8) - 1)) << 12) |
-                        (((imm >>> 19) & 1) << 20);
-                if ((offset & (1 << 20)) != 0) {
-                    offset = -offset & ((1 << 20) - 1);
-                }
-                out.printf("%6s %s, %d #%s%n", "jal", getRegisterString(rd), offset, getSymbolForAddr(virtualAddress + offset));
+                int offset = getOffsetForJType(instruction);
+                long jumpTo = virtualAddress + offset;
+                out.printf("%6s %s, %d\t#%s%n", "jal", getRegisterString(rd), offset, getSymbolForAddr(jumpTo, unmarked.contains(jumpTo)));
             } else if (opcode == 0b1100111 && funct3 == 0b000) { // jalr
                 if ((imm110 & (1 << 11)) != 0) { // I hope it works cuz i don't have binaries to test this
-                    imm110 = -imm110 & ((1 << 11) - 1);
+                    imm110 = -(-imm110 & ((1 << 11) - 1));
                 }
                 out.printf("%6s %s, %s, %d%n", "jalr", getRegisterString(rd), getRegisterString(rs1), imm110);
             } else if (opcode == 0b1100011) { // B-type
-                // fucking hell...
-                // 12 10 9 8 7 6 5 . . . . . . . . . . . . . 4 3 2 1 11 . . . . . . .
-
-                // 12 11 10 9 8 7 6 5 4 3 2 1 0
-                int offset = (((instruction >>> 8) & ((1 << 4) - 1)) << 1) |
-                        (((instruction >>> 25) & ((1 << 6) - 1)) << 5) |
-                        (((instruction >>> 7) & 1) << 11) |
-                        (((instruction >>> 31) & 1) << 12); // probably has a bug - did not test
-                if ((offset & (1 << 12)) != 0) {
-                    offset = -offset & ((1 << 12) - 1);
-                }
+                int offset = getOffsetForBType(instruction);
                 String instr = new String[]{"beq", "bne", "??", "??", "blt", "bge", "bltu", "bgeu"}[funct3];
-                out.printf("%6s %s, %s, %d #%s %n", instr, getRegisterString(rs1), getRegisterString(rs2), offset, getSymbolForAddr(virtualAddress + offset));
+                long jumpTo = virtualAddress + offset;
+                out.printf("%6s %s, %s, %d\t#%s %n", instr, getRegisterString(rs1), getRegisterString(rs2), offset, getSymbolForAddr(jumpTo, unmarked.contains(jumpTo)));
             } else if (opcode == 0b0000011) { // I-type - LB, LH, LW, LBU, LHU
                 String instr = new String[]{"lb", "lh", "lw", "??", "lbu", "lhu", "??", "??"}[funct3];
                 out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rd), imm110, getRegisterString(rs1));
@@ -148,6 +191,11 @@ public class RISCVDisassembler {
                     }
                 } else { // I-type - ADDI, SLTI, SLTIU, XORI, ORI, ANDI
                     String instr = new String[]{"addi", "??", "slti", "sltiu", "xori", "??", "ori", "andi"}[funct3];
+                    if (instr.equals("addi") || instr.equals("slti")) { // sign-extend
+                        if ((imm110 & (1 << 11)) != 0) {
+                            imm110 = -(-imm110 & ((1 << 11) - 1));
+                        }
+                    }
                     out.printf("%6s %s, %s, %d%n", instr, getRegisterString(rd), getRegisterString(rs1), imm110);
                 }
             } else if (opcode == 0b110011) { // R-type
@@ -246,7 +294,7 @@ public class RISCVDisassembler {
         }
     }
 
-    private void dumpSymTable(PrintWriter out) {
+    public void dumpSymTable(PrintWriter out) {
         out.println("Symtable:");
         ElfSymbolTableSection symtable = file.getSymbolTableSection();
         int symbolCount = symtable.symbols.length;

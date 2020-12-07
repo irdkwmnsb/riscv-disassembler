@@ -18,7 +18,7 @@ public class Main {
                     output = new OutputStreamWriter(System.out);
                 }
                 RISCVDisassembler disassembler = new RISCVDisassembler(ElfFile.from(stream));
-                disassembler.dumpAll(output);
+                disassembler.doDisassemble(new PrintWriter(output));
             } finally {
                 if (output != null) {
                     output.close();
