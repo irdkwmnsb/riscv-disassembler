@@ -7,7 +7,6 @@ import java.io.PrintWriter;
 import java.util.HashSet;
 import java.util.InputMismatchException;
 import java.util.Set;
-import java.util.TreeSet;
 
 public class RISCVDisassembler {
     final ElfFile file;
@@ -100,9 +99,7 @@ public class RISCVDisassembler {
                 (((instruction >>> 25) & ((1 << 6) - 1)) << 5) |
                 (((instruction >>> 7) & 1) << 11) |
                 (((instruction >>> 31) & 1) << 12); // probably has a bug - did not test
-        if ((offset & (1 << 12)) != 0) {
-            offset = -(-offset & ((1 << 12) - 1));
-        }
+        offset = signExtend(offset, 12);
         return offset;
     }
 
@@ -121,9 +118,7 @@ public class RISCVDisassembler {
                 (((imm >>> 8) & 1) << 11) |
                 ((imm & ((1 << 8) - 1)) << 12) |
                 (((imm >>> 19) & 1) << 20);
-        if ((offset & (1 << 20)) != 0) {
-            offset = -(-offset & ((1 << 20) - 1));
-        }
+        offset = signExtend(offset, 20);
         return offset;
     }
 
@@ -164,9 +159,7 @@ public class RISCVDisassembler {
                 long jumpTo = virtualAddress + offset;
                 out.printf("%6s %s, %d\t#%s%n", "jal", getRegisterString(rd), offset, getSymbolForAddr(jumpTo, unmarked.contains(jumpTo)));
             } else if (opcode == 0b1100111 && funct3 == 0b000) { // jalr
-                if ((imm110 & (1 << 11)) != 0) { // I hope it works cuz i don't have binaries to test this
-                    imm110 = -(-imm110 & ((1 << 11) - 1));
-                }
+                imm110 = signExtend(imm110, 11);
                 out.printf("%6s %s, %s, %d%n", "jalr", getRegisterString(rd), getRegisterString(rs1), imm110);
             } else if (opcode == 0b1100011) { // B-type
                 int offset = getOffsetForBType(instruction);
@@ -175,11 +168,11 @@ public class RISCVDisassembler {
                 out.printf("%6s %s, %s, %d\t#%s %n", instr, getRegisterString(rs1), getRegisterString(rs2), offset, getSymbolForAddr(jumpTo, unmarked.contains(jumpTo)));
             } else if (opcode == 0b0000011) { // I-type - LB, LH, LW, LBU, LHU
                 String instr = new String[]{"lb", "lh", "lw", "??", "lbu", "lhu", "??", "??"}[funct3];
-                out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rd), imm110, getRegisterString(rs1));
+                out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rd), signExtend(imm110, 11) , getRegisterString(rs1));
             } else if (opcode == 0b0100011) { // S-type SB, SH, SW
                 String instr = new String[]{"sb", "sh", "sw", "??", "??", "??", "??", "??"}[funct3];
                 int imm = rd | ((imm110 >>> 5) << 5);
-                out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rs2), imm, getRegisterString(rs1));
+                out.printf("%6s %s, %d(%s)%n", instr, getRegisterString(rs2), signExtend(imm, 11), getRegisterString(rs1));
             } else if (opcode == 0b0010011) {
                 if (funct3 == 0b001) { // SLLI
                     out.printf("%6s %s, %s, %d%n", "slli", getRegisterString(rd), getRegisterString(rs1), imm110);
@@ -192,9 +185,7 @@ public class RISCVDisassembler {
                 } else { // I-type - ADDI, SLTI, SLTIU, XORI, ORI, ANDI
                     String instr = new String[]{"addi", "??", "slti", "sltiu", "xori", "??", "ori", "andi"}[funct3];
                     if (instr.equals("addi") || instr.equals("slti")) { // sign-extend
-                        if ((imm110 & (1 << 11)) != 0) {
-                            imm110 = -(-imm110 & ((1 << 11) - 1));
-                        }
+                        imm110 = signExtend(imm110, 11);
                     }
                     out.printf("%6s %s, %s, %d%n", instr, getRegisterString(rd), getRegisterString(rs1), imm110);
                 }
@@ -233,6 +224,13 @@ public class RISCVDisassembler {
             }
             curOffset += 4;
         }
+    }
+
+    private int signExtend(int val, int nBits) {
+        if ((val & (1 << nBits)) != 0) { // I hope it works cuz i don't have binaries to test this
+            val = -(-val & ((1 << nBits) - 1));
+        }
+        return val;
     }
 
     private static int getIntWidth(int a) {
